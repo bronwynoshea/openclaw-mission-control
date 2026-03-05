@@ -942,6 +942,7 @@ class AgentLifecycleService(OpenClawDBService):
             event_type="agent.heartbeat",
             message=f"Heartbeat received from {agent.name}.",
             agent_id=agent.id,
+            board_id=agent.board_id,
         )
 
     @staticmethod
@@ -957,6 +958,7 @@ class AgentLifecycleService(OpenClawDBService):
             event_type=f"agent.{action}.failed",
             message=f"{action_label} message failed: {error}",
             agent_id=agent.id,
+            board_id=agent.board_id,
         )
 
     async def coerce_agent_create_payload(
@@ -1114,12 +1116,14 @@ class AgentLifecycleService(OpenClawDBService):
                 event_type=f"agent.{action}.direct",
                 message=f"{action.capitalize()}d directly for {provisioned.name}.",
                 agent_id=provisioned.id,
+                board_id=provisioned.board_id,
             )
             record_activity(
                 self.session,
                 event_type="agent.wakeup.sent",
                 message=f"Wakeup message sent to {provisioned.name}.",
                 agent_id=provisioned.id,
+                board_id=provisioned.board_id,
             )
             await self.session.commit()
             self.logger.info(
@@ -1818,6 +1822,7 @@ class AgentLifecycleService(OpenClawDBService):
             event_type="agent.delete.direct",
             message=f"Deleted agent {agent.name}.",
             agent_id=None,
+            board_id=agent.board_id,
         )
         now = utcnow()
         await crud.update_where(

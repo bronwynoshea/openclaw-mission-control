@@ -266,6 +266,7 @@ async def _notify_lead_on_approval_resolution(
             message=f"Lead agent notified for {approval.status} approval {approval.id}.",
             agent_id=lead.id,
             task_id=approval.task_id,
+            board_id=approval.board_id,
         )
     else:
         record_activity(
@@ -274,6 +275,7 @@ async def _notify_lead_on_approval_resolution(
             message=f"Lead notify failed for approval {approval.id}: {error}",
             agent_id=lead.id,
             task_id=approval.task_id,
+            board_id=approval.board_id,
         )
     await session.commit()
 

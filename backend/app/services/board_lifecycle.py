@@ -91,6 +91,12 @@ async def delete_board(session: AsyncSession, *, board: Board) -> OkResponse:
             col(TaskCustomFieldValue.task_id).in_(task_ids),
             commit=False,
         )
+    await crud.delete_where(
+        session,
+        ActivityEvent,
+        col(ActivityEvent.board_id) == board.id,
+        commit=False,
+    )
     # Keep teardown ordered around FK/reference chains so dependent rows are gone
     # before deleting their parent task/agent/board records.
     await crud.delete_where(

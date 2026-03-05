@@ -62,6 +62,7 @@ async def test_delete_board_cleans_org_board_access_rows() -> None:
     )
 
     deleted_table_names = [statement.table.name for statement in session.executed]
+    assert "activity_events" in deleted_table_names
     assert "organization_board_access" in deleted_table_names
     assert "organization_invite_board_access" in deleted_table_names
     assert "board_task_custom_fields" in deleted_table_names

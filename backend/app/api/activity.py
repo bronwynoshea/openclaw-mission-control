@@ -10,7 +10,7 @@ from typing import TYPE_CHECKING, Any
 from uuid import UUID
 
 from fastapi import APIRouter, Depends, HTTPException, Query, Request, status
-from sqlalchemy import asc, desc, func
+from sqlalchemy import and_, asc, desc, func, or_
 from sqlmodel import col, select
 from sse_starlette.sse import EventSourceResponse
 
@@ -78,6 +78,46 @@ def _agent_role(agent: Agent | None) -> str | None:
     return None
 
 
+def _build_activity_route(
+    *,
+    event: ActivityEvent,
+    board_id: UUID | None,
+) -> tuple[str, dict[str, str]]:
+    if board_id is not None:
+        board_id_str = str(board_id)
+        board_params = {"boardId": board_id_str}
+
+        if event.event_type == "task.comment" and event.task_id is not None:
+            return (
+                "board",
+                {
+                    **board_params,
+                    "taskId": str(event.task_id),
+                    "commentId": str(event.id),
+                },
+            )
+
+        if event.event_type.startswith("approval."):
+            return ("board.approvals", board_params)
+
+        if event.event_type.startswith("board."):
+            return ("board", {**board_params, "panel": "chat"})
+
+        if event.task_id is not None:
+            return ("board", {**board_params, "taskId": str(event.task_id)})
+
+        return ("board", board_params)
+
+    fallback_params = {
+        "eventId": str(event.id),
+        "eventType": event.event_type,
+        "createdAt": event.created_at.isoformat(),
+    }
+    if event.task_id is not None:
+        fallback_params["taskId"] = str(event.task_id)
+    return ("activity", fallback_params)
+
+
 def _feed_item(
     event: ActivityEvent,
     task: Task,
@@ -141,6 +181,46 @@ def _coerce_task_comment_rows(
     return rows
 
 
+def _coerce_activity_rows(
+    items: Sequence[Any],
+) -> list[tuple[ActivityEvent, UUID | None, UUID | None]]:
+    rows: list[tuple[ActivityEvent, UUID | None, UUID | None]] = []
+    for item in items:
+        first: Any
+        second: Any
+        third: Any
+
+        if isinstance(item, tuple):
+            if len(item) != 3:
+                msg = "Expected (ActivityEvent, event_board_id, task_board_id) rows"
+                raise TypeError(msg)
+            first, second, third = item
+        else:
+            try:
+                row_len = len(item)
+                first = item[0]
+                second = item[1]
+                third = item[2]
+            except (IndexError, KeyError, TypeError):
+                msg = "Expected (ActivityEvent, event_board_id, task_board_id) rows"
+                raise TypeError(msg) from None
+            if row_len != 3:
+                msg = "Expected (ActivityEvent, event_board_id, task_board_id) rows"
+                raise TypeError(msg)
+
+        if not isinstance(first, ActivityEvent):
+            msg = "Expected (ActivityEvent, event_board_id, task_board_id) rows"
+            raise TypeError(msg)
+        if second is not None and not isinstance(second, UUID):
+            msg = "Expected (ActivityEvent, event_board_id, task_board_id) rows"
+            raise TypeError(msg)
+        if third is not None and not isinstance(third, UUID):
+            msg = "Expected (ActivityEvent, event_board_id, task_board_id) rows"
+            raise TypeError(msg)
+        rows.append((first, second, third))
+    return rows
+
+
 async def _fetch_task_comment_events(
     session: AsyncSession,
     since: datetime,
@@ -168,9 +248,13 @@ async def list_activity(
     actor: ActorContext = ACTOR_DEP,
 ) -> LimitOffsetPage[ActivityEventRead]:
     """List activity events visible to the calling actor."""
-    statement = select(ActivityEvent)
+    statement: Any = select(
+        ActivityEvent,
+        col(ActivityEvent.board_id).label("event_board_id"),
+        col(Task.board_id).label("task_board_id"),
+    ).outerjoin(Task, col(ActivityEvent.task_id) == col(Task.id))
     if actor.actor_type == "agent" and actor.agent:
-        statement = statement.where(ActivityEvent.agent_id == actor.agent.id)
+        statement = statement.where(col(ActivityEvent.agent_id) == actor.agent.id)
     elif actor.actor_type == "user" and actor.user:
         member = await get_active_membership(session, actor.user)
         if member is None:
@@ -179,12 +263,34 @@ async def list_activity(
         if not board_ids:
             statement = statement.where(col(ActivityEvent.id).is_(None))
         else:
-            statement = statement.join(
-                Task,
-                col(ActivityEvent.task_id) == col(Task.id),
-            ).where(col(Task.board_id).in_(board_ids))
+            statement = statement.where(
+                or_(
+                    col(ActivityEvent.board_id).in_(board_ids),
+                    and_(
+                        col(ActivityEvent.board_id).is_(None),
+                        col(Task.board_id).in_(board_ids),
+                    ),
+                ),
+            )
     statement = statement.order_by(desc(col(ActivityEvent.created_at)))
-    return await paginate(session, statement)
+
+    def _transform(items: Sequence[Any]) -> Sequence[Any]:
+        rows = _coerce_activity_rows(items)
+        events: list[ActivityEventRead] = []
+        for event, event_board_id, task_board_id in rows:
+            payload = ActivityEventRead.model_validate(event, from_attributes=True)
+            resolved_board_id = event_board_id or task_board_id
+            payload.board_id = resolved_board_id
+            route_name, route_params = _build_activity_route(
+                event=event,
+                board_id=resolved_board_id,
+            )
+            payload.route_name = route_name
+            payload.route_params = route_params
+            events.append(payload)
+        return events
+
+    return await paginate(session, statement, transformer=_transform)
 
 
 @router.get(

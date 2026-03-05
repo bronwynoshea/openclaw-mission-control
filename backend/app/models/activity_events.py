@@ -14,7 +14,7 @@ RUNTIME_ANNOTATION_TYPES = (datetime,)
 
 
 class ActivityEvent(QueryModel, table=True):
-    """Discrete activity event tied to tasks and agents."""
+    """Discrete activity event tied to board/task/agent context."""
 
     __tablename__ = "activity_events"  # pyright: ignore[reportAssignmentType]
 
@@ -23,4 +23,5 @@ class ActivityEvent(QueryModel, table=True):
     message: str | None = None
     agent_id: UUID | None = Field(default=None, foreign_key="agents.id", index=True)
     task_id: UUID | None = Field(default=None, foreign_key="tasks.id", index=True)
+    board_id: UUID | None = Field(default=None, foreign_key="boards.id", index=True)
     created_at: datetime = Field(default_factory=utcnow)

@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import json
 from enum import Enum
 from typing import TYPE_CHECKING, Any, cast
 from uuid import UUID
@@ -20,6 +21,7 @@ from app.core.agent_auth import AgentAuthContext, get_agent_auth_context
 from app.db.pagination import paginate
 from app.db.session import get_session
 from app.models.agents import Agent
+from app.models.board_webhook_payloads import BoardWebhookPayload
 from app.models.boards import Board
 from app.models.tags import Tag
 from app.models.task_dependencies import TaskDependency
@@ -33,6 +35,7 @@ from app.schemas.agents import (
 from app.schemas.approvals import ApprovalCreate, ApprovalRead, ApprovalStatus
 from app.schemas.board_memory import BoardMemoryCreate, BoardMemoryRead
 from app.schemas.board_onboarding import BoardOnboardingAgentUpdate, BoardOnboardingRead
+from app.schemas.board_webhooks import BoardWebhookPayloadRead
 from app.schemas.boards import BoardRead
 from app.schemas.common import OkResponse
 from app.schemas.errors import LLMErrorResponse
@@ -165,6 +168,53 @@ def _agent_board_openapi_hints(
         ],
         "x-routing-policy-examples": routing_examples,
     }
+
+
+def _truncate_preview(raw: str, max_chars: int) -> str:
+    if len(raw) <= max_chars:
+        return raw
+    if max_chars <= 3:
+        return raw[:max_chars]
+    return f"{raw[: max_chars - 3]}..."
+
+
+def _payload_preview_with_limit(
+    value: dict[str, object] | list[object] | str | int | float | bool | None,
+    *,
+    max_chars: int,
+) -> tuple[str, bool]:
+    if isinstance(value, str):
+        return _truncate_preview(value, max_chars), len(value) > max_chars
+
+    try:
+        # Stream JSON chunks so we can stop once we know truncation is required.
+        encoder = json.JSONEncoder(ensure_ascii=True)
+        parts: list[str] = []
+        current_len = 0
+        truncated = False
+        for chunk in encoder.iterencode(value):
+            remaining = (max_chars + 1) - current_len
+            if remaining <= 0:
+                truncated = True
+                break
+            if len(chunk) <= remaining:
+                parts.append(chunk)
+                current_len += len(chunk)
+                continue
+            parts.append(chunk[:remaining])
+            current_len += remaining
+            truncated = True
+            break
+        raw = "".join(parts)
+    except TypeError:
+        raw = str(value)
+        return _truncate_preview(raw, max_chars), len(raw) > max_chars
+
+    if len(raw) > max_chars:
+        truncated = True
+    if not truncated:
+        return raw, False
+    return _truncate_preview(raw, max_chars), True
 
 
 def _guard_board_access(agent_ctx: AgentAuthContext, board: Board) -> None:
@@ -572,6 +622,73 @@ async def list_tags(
     ]
 
 
+@router.get(
+    "/boards/{board_id}/webhooks/{webhook_id}/payloads/{payload_id}",
+    response_model=BoardWebhookPayloadRead,
+    tags=AGENT_BOARD_TAGS,
+    openapi_extra=_agent_board_openapi_hints(
+        intent="agent_board_webhook_payload_read",
+        when_to_use=[
+            "Agent needs to inspect a previously captured webhook payload for this board.",
+            "Agent is reconciling missed webhook events or deduping inbound processing.",
+        ],
+        routing_examples=[
+            {
+                "input": {
+                    "intent": "inspect stored webhook payload by id",
+                    "required_privilege": "any_agent",
+                },
+                "decision": "agent_board_webhook_payload_read",
+            },
+            {
+                "input": {
+                    "intent": "list tasks for planning",
+                    "required_privilege": "any_agent",
+                },
+                "decision": "agent_board_task_discovery",
+            },
+        ],
+    ),
+)
+async def get_webhook_payload(
+    webhook_id: UUID,
+    payload_id: UUID,
+    max_chars: int | None = Query(default=None, ge=1, le=1_000_000),
+    board: Board = BOARD_DEP,
+    session: AsyncSession = SESSION_DEP,
+    agent_ctx: AgentAuthContext = AGENT_CTX_DEP,
+) -> BoardWebhookPayloadRead:
+    """Fetch a stored webhook payload (agent-accessible, read-only).
+
+    This enables board-scoped agents to backfill dropped webhook events and enforce
+    idempotency by inspecting previously received payloads.
+
+    If `max_chars` is provided and the serialized payload exceeds the limit,
+    the response payload is returned as a truncated string preview.
+    """
+
+    _guard_board_access(agent_ctx, board)
+
+    payload = (
+        await session.exec(
+            select(BoardWebhookPayload)
+            .where(col(BoardWebhookPayload.id) == payload_id)
+            .where(col(BoardWebhookPayload.board_id) == board.id)
+            .where(col(BoardWebhookPayload.webhook_id) == webhook_id),
+        )
+    ).first()
+    if payload is None:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND)
+
+    response = BoardWebhookPayloadRead.model_validate(payload, from_attributes=True)
+    if max_chars is not None and response.payload is not None:
+        preview, was_truncated = _payload_preview_with_limit(response.payload, max_chars=max_chars)
+        if was_truncated:
+            response.payload = preview
+
+    return response
+
+
 @router.post(
     "/boards/{board_id}/tasks",
     response_model=TaskRead,
@@ -742,6 +859,7 @@ async def create_task(
         task_id=task.id,
         message=f"Task created by lead: {task.title}.",
         agent_id=agent_ctx.agent.id,
+        board_id=task.board_id,
     )
     await session.commit()
     if task.assigned_agent_id:

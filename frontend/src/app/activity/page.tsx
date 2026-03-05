@@ -2,6 +2,7 @@
 
 import { memo, useCallback, useEffect, useMemo, useRef, useState } from "react";
 import Link from "next/link";
+import { useSearchParams } from "next/navigation";
 
 import { SignedIn, SignedOut, useAuth } from "@/auth/clerk";
 import { Activity as ActivityIcon } from "lucide-react";
@@ -82,20 +83,27 @@ type FeedItem = {
   created_at: string;
   event_type: FeedEventType;
   message: string | null;
+  source_event_id: string | null;
   agent_id: string | null;
   actor_name: string;
   actor_role: string | null;
   board_id: string | null;
   board_name: string | null;
+  board_href: string | null;
   task_id: string | null;
   task_title: string | null;
   title: string;
+  context_href: string | null;
 };
 
 type TaskMeta = {
   title: string;
   boardId: string | null;
 };
+
+type ActivityRouteParams = Record<string, string>;
+
+const ACTIVITY_FEED_PATH = "/activity";
 
 const TASK_EVENT_TYPES = new Set<TaskEventType>([
   "task.comment",
@@ -117,6 +125,76 @@ const formatShortTimestamp = (value: string) => {
     minute: "2-digit",
   });
 };
+
+const normalizeRouteParams = (
+  params: ActivityEventRead["route_params"] | ActivityRouteParams | null | undefined,
+): ActivityRouteParams => {
+  if (!params || typeof params !== "object") return {};
+  return Object.entries(params).reduce<ActivityRouteParams>((acc, [key, value]) => {
+    if (typeof value === "string" && value.length > 0) {
+      acc[key] = value;
+    }
+    return acc;
+  }, {});
+};
+
+const buildRouteHref = (
+  routeName: string | null | undefined,
+  routeParams: ActivityRouteParams,
+  fallback: {
+    eventId: string;
+    eventType: string;
+    createdAt: string;
+    taskId: string | null;
+  },
+): string => {
+  if (routeName === "board.approvals") {
+    const boardId = routeParams.boardId;
+    if (boardId) {
+      return `/boards/${encodeURIComponent(boardId)}/approvals`;
+    }
+  }
+
+  if (routeName === "board") {
+    const boardId = routeParams.boardId;
+    if (boardId) {
+      const params = new URLSearchParams();
+      Object.entries(routeParams).forEach(([key, value]) => {
+        if (key !== "boardId") params.set(key, value);
+      });
+      const query = params.toString();
+      return query
+        ? `/boards/${encodeURIComponent(boardId)}?${query}`
+        : `/boards/${encodeURIComponent(boardId)}`;
+    }
+  }
+
+  const params = new URLSearchParams(
+    Object.keys(routeParams).length > 0
+      ? routeParams
+      : {
+          eventId: fallback.eventId,
+          eventType: fallback.eventType,
+          createdAt: fallback.createdAt,
+        },
+  );
+  if (fallback.taskId && !params.has("taskId")) {
+    params.set("taskId", fallback.taskId);
+  }
+  return `${ACTIVITY_FEED_PATH}?${params.toString()}`;
+};
+
+const buildBoardHref = (
+  routeParams: ActivityRouteParams,
+  boardId: string | null,
+): string | null => {
+  const resolved = routeParams.boardId ?? boardId;
+  if (!resolved) return null;
+  return `/boards/${encodeURIComponent(resolved)}`;
+};
+
+const feedItemElementId = (id: string): string =>
+  `activity-item-${id.replace(/[^a-zA-Z0-9_-]/g, "-")}`;
 
 const normalizeAgent = (agent: AgentRead): Agent => ({
   ...agent,
@@ -205,26 +283,35 @@ const eventPillClass = (eventType: FeedEventType): string => {
   return "border-slate-200 bg-slate-100 text-slate-700";
 };
 
-const FeedCard = memo(function FeedCard({ item }: { item: FeedItem }) {
+const FeedCard = memo(function FeedCard({
+  item,
+  isHighlighted = false,
+}: {
+  item: FeedItem;
+  isHighlighted?: boolean;
+}) {
   const message = (item.message ?? "").trim();
   const authorAvatar = (item.actor_name[0] ?? "A").toUpperCase();
-  const taskHref =
-    item.board_id && item.task_id
-      ? `/boards/${item.board_id}?taskId=${item.task_id}`
-      : null;
-  const boardHref = item.board_id ? `/boards/${item.board_id}` : null;
 
   return (
-    <div className="rounded-xl border border-slate-200 bg-white p-4 transition hover:border-slate-300">
+    <div
+      id={feedItemElementId(item.id)}
+      className={cn(
+        "scroll-mt-28 rounded-xl border bg-white p-4 transition",
+        isHighlighted
+          ? "border-blue-300 ring-2 ring-blue-200"
+          : "border-slate-200 hover:border-slate-300",
+      )}
+    >
       <div className="flex items-start gap-3">
         <div className="flex h-9 w-9 flex-shrink-0 items-center justify-center rounded-full bg-slate-100 text-xs font-semibold text-slate-700">
           {authorAvatar}
         </div>
         <div className="min-w-0 flex-1">
           <div className="min-w-0">
-            {taskHref ? (
+            {item.context_href ? (
               <Link
-                href={taskHref}
+                href={item.context_href}
                 className="block text-sm font-semibold leading-snug text-slate-900 transition hover:text-slate-950 hover:underline"
                 title={item.title}
                 style={{
@@ -250,9 +337,9 @@ const FeedCard = memo(function FeedCard({ item }: { item: FeedItem }) {
               >
                 {eventLabel(item.event_type)}
               </span>
-              {boardHref && item.board_name ? (
+              {item.board_href && item.board_name ? (
                 <Link
-                  href={boardHref}
+                  href={item.board_href}
                   className="font-semibold text-slate-700 hover:text-slate-900 hover:underline"
                 >
                   {item.board_name}
@@ -302,7 +389,15 @@ export default function ActivityPage() {
   }, []);
 
   const { isSignedIn } = useAuth();
+  const searchParams = useSearchParams();
   const isPageActive = usePageActive();
+  const selectedEventId = useMemo(() => {
+    const value = searchParams.get("eventId");
+    if (!value) return null;
+    const trimmed = value.trim();
+    return trimmed.length > 0 ? trimmed : null;
+  }, [searchParams]);
+  const [highlightedFeedItemId, setHighlightedFeedItemId] = useState<string | null>(null);
 
   const membershipQuery = useGetMyMembershipApiV1OrganizationsMeMemberGet<
     getMyMembershipApiV1OrganizationsMeMemberGetResponse,
@@ -397,27 +492,53 @@ export default function ActivityPage() {
   );
 
   const mapTaskActivity = useCallback(
-    (event: ActivityEventRead): FeedItem | null => {
+    (
+      event: ActivityEventRead,
+      fallbackBoardId: string | null = null,
+    ): FeedItem | null => {
       if (!isTaskEventType(event.event_type)) return null;
       const meta = event.task_id
         ? taskMetaByIdRef.current.get(event.task_id)
         : null;
-      const boardId = meta?.boardId ?? null;
+      const routeName = event.route_name ?? null;
+      const routeParams = normalizeRouteParams(event.route_params);
+      const taskId = event.task_id ?? routeParams.taskId ?? null;
+      const boardId =
+        meta?.boardId ??
+        event.board_id ??
+        routeParams.boardId ??
+        fallbackBoardId ??
+        null;
+      const fallbackRouteParams: ActivityRouteParams = {};
+      if (boardId) fallbackRouteParams.boardId = boardId;
+      if (taskId) fallbackRouteParams.taskId = taskId;
+      const effectiveRouteParams =
+        Object.keys(routeParams).length > 0 ? routeParams : fallbackRouteParams;
+      const effectiveRouteName =
+        routeName ?? (boardId ? "board" : "activity");
       const author = resolveAuthor(event.agent_id, currentUserDisplayName);
       return {
         id: `activity:${event.id}`,
         created_at: event.created_at,
         event_type: event.event_type,
         message: event.message ?? null,
+        source_event_id: event.id,
         agent_id: author.id,
         actor_name: author.name,
         actor_role: author.role,
         board_id: boardId,
         board_name: boardNameForId(boardId),
-        task_id: event.task_id ?? null,
+        board_href: buildBoardHref(effectiveRouteParams, boardId),
+        task_id: taskId,
         task_title: meta?.title ?? null,
         title:
-          meta?.title ?? (event.task_id ? "Unknown task" : "Task activity"),
+          meta?.title ?? (taskId ? "Unknown task" : "Task activity"),
+        context_href: buildRouteHref(effectiveRouteName, effectiveRouteParams, {
+          eventId: event.id,
+          eventType: event.event_type,
+          createdAt: event.created_at,
+          taskId,
+        }),
       };
     },
     [boardNameForId, currentUserDisplayName, resolveAuthor],
@@ -429,21 +550,34 @@ export default function ActivityPage() {
         ? taskMetaByIdRef.current.get(comment.task_id)
         : null;
       const boardId = meta?.boardId ?? fallbackBoardId;
+      const taskId = comment.task_id ?? null;
+      const routeParams: ActivityRouteParams = {};
+      if (boardId) routeParams.boardId = boardId;
+      if (taskId) routeParams.taskId = taskId;
+      routeParams.commentId = comment.id;
       const author = resolveAuthor(comment.agent_id, currentUserDisplayName);
       return {
         id: `comment:${comment.id}`,
         created_at: comment.created_at,
         event_type: "task.comment",
         message: comment.message ?? null,
+        source_event_id: null,
         agent_id: author.id,
         actor_name: author.name,
         actor_role: author.role,
         board_id: boardId,
         board_name: boardNameForId(boardId),
-        task_id: comment.task_id ?? null,
+        board_href: buildBoardHref(routeParams, boardId),
+        task_id: taskId,
         task_title: meta?.title ?? null,
         title:
-          meta?.title ?? (comment.task_id ? "Unknown task" : "Task activity"),
+          meta?.title ?? (taskId ? "Unknown task" : "Task activity"),
+        context_href: buildRouteHref("board", routeParams, {
+          eventId: comment.id,
+          eventType: "task.comment",
+          createdAt: comment.created_at,
+          taskId,
+        }),
       };
     },
     [boardNameForId, currentUserDisplayName, resolveAuthor],
@@ -496,20 +630,30 @@ export default function ActivityPage() {
       const taskMeta = approval.task_id
         ? taskMetaByIdRef.current.get(approval.task_id)
         : null;
+      const routeParams: ActivityRouteParams = { boardId };
+      const taskId = approval.task_id ?? null;
 
       return {
         id: `approval:${approval.id}:${kind}:${stamp}`,
         created_at: stamp,
         event_type: kind,
         message,
+        source_event_id: null,
         agent_id: author.id,
         actor_name: author.name,
         actor_role: author.role,
         board_id: boardId,
         board_name: boardNameForId(boardId),
-        task_id: approval.task_id ?? null,
+        board_href: buildBoardHref(routeParams, boardId),
+        task_id: taskId,
         task_title: taskMeta?.title ?? null,
         title: `Approval · ${action}`,
+        context_href: buildRouteHref("board.approvals", routeParams, {
+          eventId: approval.id,
+          eventType: kind,
+          createdAt: stamp,
+          taskId,
+        }),
       };
     },
     [boardNameForId, currentUserDisplayName, resolveAuthor],
@@ -523,19 +667,28 @@ export default function ActivityPage() {
         currentUserDisplayName,
       );
       const command = content.startsWith("/");
+      const routeParams: ActivityRouteParams = { boardId, panel: "chat" };
       return {
         id: `chat:${memory.id}`,
         created_at: memory.created_at,
         event_type: command ? "board.command" : "board.chat",
         message: content || null,
+        source_event_id: null,
         agent_id: null,
         actor_name: actorName,
         actor_role: null,
         board_id: boardId,
         board_name: boardNameForId(boardId),
+        board_href: buildBoardHref(routeParams, boardId),
         task_id: null,
         task_title: null,
         title: command ? "Board command" : "Board chat",
+        context_href: buildRouteHref("board", routeParams, {
+          eventId: memory.id,
+          eventType: command ? "board.command" : "board.chat",
+          createdAt: memory.created_at,
+          taskId: null,
+        }),
       };
     },
     [boardNameForId, currentUserDisplayName],
@@ -587,20 +740,35 @@ export default function ActivityPage() {
             : kind === "agent.offline"
               ? `${agent.name} is offline.`
               : `${agent.name} updated (${humanizeStatus(nextStatus)}).`;
+      const boardId = agent.board_id ?? null;
+      const routeParams: ActivityRouteParams = boardId
+        ? { boardId }
+        : {};
 
       return {
         id: `agent:${agent.id}:${isSnapshot ? "snapshot" : kind}:${stamp}`,
         created_at: stamp,
         event_type: kind,
         message,
+        source_event_id: null,
         agent_id: agent.id,
         actor_name: agent.name,
         actor_role: roleFromAgent(agent),
-        board_id: agent.board_id ?? null,
-        board_name: boardNameForId(agent.board_id),
+        board_id: boardId,
+        board_name: boardNameForId(boardId),
+        board_href: buildBoardHref(routeParams, boardId),
         task_id: null,
         task_title: null,
         title: `Agent · ${agent.name}`,
+        context_href:
+          boardId === null
+            ? null
+            : buildRouteHref("board", routeParams, {
+                eventId: agent.id,
+                eventType: kind,
+                createdAt: stamp,
+                taskId: null,
+              }),
       };
     },
     [boardNameForId],
@@ -839,12 +1007,8 @@ export default function ActivityPage() {
                     updateTaskMeta(payload.task, boardId);
                   }
                   if (payload.activity) {
-                    const mapped = mapTaskActivity(payload.activity);
+                    const mapped = mapTaskActivity(payload.activity, boardId);
                     if (mapped) {
-                      if (!mapped.board_id) {
-                        mapped.board_id = boardId;
-                        mapped.board_name = boardNameForId(boardId);
-                      }
                       if (!mapped.task_title && payload.task?.title) {
                         mapped.task_title = payload.task.title;
                         mapped.title = payload.task.title;
@@ -1285,6 +1449,48 @@ export default function ActivityPage() {
     });
   }, [feedItems]);
 
+  const selectedFeedItemId = useMemo(() => {
+    if (!selectedEventId) return null;
+    const directMatch = orderedFeed.find(
+      (item) => item.source_event_id === selectedEventId,
+    );
+    if (directMatch) return directMatch.id;
+    const fallbackMatch = orderedFeed.find(
+      (item) =>
+        item.id === selectedEventId || item.id === `activity:${selectedEventId}`,
+    );
+    return fallbackMatch?.id ?? null;
+  }, [orderedFeed, selectedEventId]);
+
+  useEffect(() => {
+    if (!selectedFeedItemId) {
+      setHighlightedFeedItemId(null);
+      return;
+    }
+
+    setHighlightedFeedItemId(selectedFeedItemId);
+    const scrollTimeout = window.setTimeout(() => {
+      const element = document.getElementById(feedItemElementId(selectedFeedItemId));
+      if (!element) return;
+      element.scrollIntoView({ behavior: "smooth", block: "center" });
+    }, 50);
+
+    const clearHighlightTimeout = window.setTimeout(() => {
+      setHighlightedFeedItemId((current) =>
+        current === selectedFeedItemId ? null : current,
+      );
+    }, 4_000);
+
+    return () => {
+      window.clearTimeout(scrollTimeout);
+      window.clearTimeout(clearHighlightTimeout);
+    };
+  }, [selectedFeedItemId]);
+
+  const hasUnresolvedDeepLink = Boolean(
+    selectedEventId && !selectedFeedItemId && !isFeedLoading && !feedError,
+  );
+
   return (
     <DashboardShell>
       {isMounted ? (
@@ -1321,11 +1527,22 @@ export default function ActivityPage() {
               </div>
 
               <div className="p-8">
+                {hasUnresolvedDeepLink ? (
+                  <div className="mb-4 rounded-lg border border-amber-300 bg-amber-50 p-3 text-sm text-amber-800">
+                    Requested activity item is not in the current feed window yet.
+                  </div>
+                ) : null}
                 <ActivityFeed
                   isLoading={isFeedLoading}
                   errorMessage={feedError}
                   items={orderedFeed}
-                  renderItem={(item) => <FeedCard key={item.id} item={item} />}
+                  renderItem={(item) => (
+                    <FeedCard
+                      key={item.id}
+                      item={item}
+                      isHighlighted={highlightedFeedItemId === item.id}
+                    />
+                  )}
                 />
               </div>
             </main>

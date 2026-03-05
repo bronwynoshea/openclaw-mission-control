@@ -6,6 +6,7 @@
  */
 
 export * from "./activityEventRead";
+export * from "./activityEventReadRouteParams";
 export * from "./activityTaskCommentFeedItemRead";
 export * from "./agentCreate";
 export * from "./agentCreateHeartbeatConfig";
@@ -77,6 +78,8 @@ export * from "./dashboardMetrics";
 export * from "./dashboardMetricsApiV1MetricsDashboardGetParams";
 export * from "./dashboardMetricsApiV1MetricsDashboardGetRangeKey";
 export * from "./dashboardMetricsRange";
+export * from "./dashboardPendingApproval";
+export * from "./dashboardPendingApprovals";
 export * from "./dashboardRangeSeries";
 export * from "./dashboardRangeSeriesBucket";
 export * from "./dashboardRangeSeriesRange";

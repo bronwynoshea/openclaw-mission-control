@@ -4,6 +4,7 @@ from __future__ import annotations
 
 from pathlib import Path
 from typing import Self
+from urllib.parse import urlparse
 
 from pydantic import Field, model_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
@@ -48,7 +49,7 @@ class Settings(BaseSettings):
     clerk_leeway: float = 10.0
 
     cors_origins: str = ""
-    base_url: str = ""
+    base_url: str
     # Security response headers (blank disables header injection)
     security_header_x_content_type_options: str = ""
     security_header_x_frame_options: str = ""
@@ -93,6 +94,15 @@ class Settings(BaseSettings):
                 raise ValueError(
                     "LOCAL_AUTH_TOKEN must be at least 50 characters and non-placeholder when AUTH_MODE=local.",
                 )
+        base_url = self.base_url.strip()
+        if not base_url:
+            raise ValueError("BASE_URL must be set and non-empty.")
+        parsed_base_url = urlparse(base_url)
+        if parsed_base_url.scheme not in {"http", "https"} or not parsed_base_url.netloc:
+            raise ValueError(
+                "BASE_URL must be an absolute http(s) URL (e.g. http://localhost:8000).",
+            )
+        self.base_url = base_url.rstrip("/")
         # In dev, default to applying Alembic migrations at startup to avoid
         # schema drift (e.g. missing newly-added columns).
         if "db_auto_migrate" not in self.model_fields_set and self.environment == "dev":

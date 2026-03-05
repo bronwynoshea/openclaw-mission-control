@@ -6,6 +6,7 @@
  */
 import type { DashboardKpis } from "./dashboardKpis";
 import type { DashboardMetricsRange } from "./dashboardMetricsRange";
+import type { DashboardPendingApprovals } from "./dashboardPendingApprovals";
 import type { DashboardSeriesSet } from "./dashboardSeriesSet";
 import type { DashboardWipSeriesSet } from "./dashboardWipSeriesSet";
 
@@ -13,11 +14,12 @@ import type { DashboardWipSeriesSet } from "./dashboardWipSeriesSet";
  * Complete dashboard metrics response payload.
  */
 export interface DashboardMetrics {
-  range: DashboardMetricsRange;
-  generated_at: string;
-  kpis: DashboardKpis;
-  throughput: DashboardSeriesSet;
   cycle_time: DashboardSeriesSet;
   error_rate: DashboardSeriesSet;
+  generated_at: string;
+  kpis: DashboardKpis;
+  pending_approvals: DashboardPendingApprovals;
+  range: DashboardMetricsRange;
+  throughput: DashboardSeriesSet;
   wip: DashboardWipSeriesSet;
 }

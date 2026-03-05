@@ -57,7 +57,7 @@ A starter file exists at `backend/.env.example`.
     `postgresql+psycopg://postgres:postgres@localhost:5432/mission_control`
 - `CORS_ORIGINS` (comma-separated)
   - Example: `http://localhost:3000`
-- `BASE_URL` (optional)
+- `BASE_URL` (required for gateway provisioning/agent heartbeat templates; no fallback)
 
 ### Database lifecycle
 

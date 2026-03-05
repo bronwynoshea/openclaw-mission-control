@@ -4,10 +4,11 @@ from __future__ import annotations
 
 from datetime import datetime
 from typing import Literal
+from uuid import UUID
 
 from sqlmodel import SQLModel
 
-RUNTIME_ANNOTATION_TYPES = (datetime,)
+RUNTIME_ANNOTATION_TYPES = (datetime, UUID)
 DashboardRangeKey = Literal["24h", "3d", "7d", "14d", "1m", "3m", "6m", "1y"]
 DashboardBucketKey = Literal["hour", "day", "week", "month"]
 
@@ -64,8 +65,31 @@ class DashboardKpis(SQLModel):
 
     active_agents: int
     tasks_in_progress: int
+    inbox_tasks: int
+    in_progress_tasks: int
+    review_tasks: int
+    done_tasks: int
     error_rate_pct: float
     median_cycle_time_hours_7d: float | None
+
+
+class DashboardPendingApproval(SQLModel):
+    """Single pending approval item for cross-board dashboard listing."""
+
+    approval_id: UUID
+    board_id: UUID
+    board_name: str
+    action_type: str
+    confidence: float
+    created_at: datetime
+    task_title: str | None = None
+
+
+class DashboardPendingApprovals(SQLModel):
+    """Pending approval snapshot used on the dashboard."""
+
+    total: int
+    items: list[DashboardPendingApproval]
 
 
 class DashboardMetrics(SQLModel):
@@ -78,3 +102,4 @@ class DashboardMetrics(SQLModel):
     cycle_time: DashboardSeriesSet
     error_rate: DashboardSeriesSet
     wip: DashboardWipSeriesSet
+    pending_approvals: DashboardPendingApprovals

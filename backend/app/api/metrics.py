@@ -18,12 +18,15 @@ from app.core.time import utcnow
 from app.db.session import get_session
 from app.models.activity_events import ActivityEvent
 from app.models.agents import Agent
+from app.models.approvals import Approval
 from app.models.boards import Board
 from app.models.tasks import Task
 from app.schemas.metrics import (
     DashboardBucketKey,
     DashboardKpis,
     DashboardMetrics,
+    DashboardPendingApproval,
+    DashboardPendingApprovals,
     DashboardRangeKey,
     DashboardRangeSeries,
     DashboardSeriesPoint,
@@ -169,7 +172,7 @@ async def _query_throughput(
     bucket_col = func.date_trunc(range_spec.bucket, Task.updated_at).label("bucket")
     statement = (
         select(bucket_col, func.count())
-        .where(col(Task.status) == "review")
+        .where(col(Task.status) == "done")
         .where(col(Task.updated_at) >= range_spec.start)
         .where(col(Task.updated_at) <= range_spec.end)
     )
@@ -370,22 +373,79 @@ async def _active_agents(
     return int(result)
 
 
-async def _tasks_in_progress(
+async def _task_status_counts(
     session: AsyncSession,
-    range_spec: RangeSpec,
     board_ids: list[UUID],
-) -> int:
+) -> dict[str, int]:
     if not board_ids:
-        return 0
+        return {
+            "inbox": 0,
+            "in_progress": 0,
+            "review": 0,
+            "done": 0,
+        }
     statement = (
-        select(func.count())
-        .where(col(Task.status) == "in_progress")
-        .where(col(Task.updated_at) >= range_spec.start)
-        .where(col(Task.updated_at) <= range_spec.end)
+        select(col(Task.status), func.count())
         .where(col(Task.board_id).in_(board_ids))
+        .group_by(col(Task.status))
     )
-    result = (await session.exec(statement)).one()
-    return int(result)
+    results = (await session.exec(statement)).all()
+    counts = {
+        "inbox": 0,
+        "in_progress": 0,
+        "review": 0,
+        "done": 0,
+    }
+    for status_value, total in results:
+        key = str(status_value)
+        if key in counts:
+            counts[key] = int(total or 0)
+    return counts
+
+
+async def _pending_approvals_snapshot(
+    session: AsyncSession,
+    board_ids: list[UUID],
+    *,
+    limit: int = 10,
+) -> DashboardPendingApprovals:
+    if not board_ids:
+        return DashboardPendingApprovals(total=0, items=[])
+
+    total_statement = (
+        select(func.count(col(Approval.id)))
+        .where(col(Approval.board_id).in_(board_ids))
+        .where(col(Approval.status) == "pending")
+    )
+    total = int((await session.exec(total_statement)).one() or 0)
+    if total == 0:
+        return DashboardPendingApprovals(total=0, items=[])
+
+    rows = (
+        await session.exec(
+            select(Approval, Board, Task)
+            .join(Board, col(Board.id) == col(Approval.board_id))
+            .outerjoin(Task, col(Task.id) == col(Approval.task_id))
+            .where(col(Approval.board_id).in_(board_ids))
+            .where(col(Approval.status) == "pending")
+            .order_by(col(Approval.created_at).desc())
+            .limit(limit)
+        )
+    ).all()
+
+    items = [
+        DashboardPendingApproval(
+            approval_id=approval.id,
+            board_id=approval.board_id,
+            board_name=board.name,
+            action_type=approval.action_type,
+            confidence=float(approval.confidence),
+            created_at=approval.created_at,
+            task_title=task.title if task is not None else None,
+        )
+        for approval, board, task in rows
+    ]
+    return DashboardPendingApprovals(total=total, items=items)
 
 
 async def _resolve_dashboard_board_ids(
@@ -461,10 +521,16 @@ async def dashboard_metrics(
         primary=wip_primary,
         comparison=wip_comparison,
     )
+    task_status_counts = await _task_status_counts(session, board_ids)
+    pending_approvals = await _pending_approvals_snapshot(session, board_ids, limit=10)
 
     kpis = DashboardKpis(
         active_agents=await _active_agents(session, primary, board_ids),
-        tasks_in_progress=await _tasks_in_progress(session, primary, board_ids),
+        tasks_in_progress=task_status_counts["in_progress"],
+        inbox_tasks=task_status_counts["inbox"],
+        in_progress_tasks=task_status_counts["in_progress"],
+        review_tasks=task_status_counts["review"],
+        done_tasks=task_status_counts["done"],
         error_rate_pct=await _error_rate_kpi(session, primary, board_ids),
         median_cycle_time_hours_7d=await _median_cycle_time_for_range(
             session,
@@ -481,4 +547,5 @@ async def dashboard_metrics(
         cycle_time=cycle_time,
         error_rate=error_rate,
         wip=wip,
+        pending_approvals=pending_approvals,
     )

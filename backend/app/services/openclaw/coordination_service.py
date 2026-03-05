@@ -93,7 +93,7 @@ class GatewayCoordinationService(AbstractGatewayMessagingService):
         reply_tags: list[str] | None,
         reply_source: str | None,
     ) -> str:
-        base_url = settings.base_url or "http://localhost:8000"
+        base_url = settings.base_url
         header = "GATEWAY MAIN QUESTION" if kind == "question" else "GATEWAY MAIN HANDOFF"
         correlation = correlation_id.strip() if correlation_id else ""
         correlation_line = f"Correlation ID: {correlation}\n" if correlation else ""
@@ -204,6 +204,7 @@ class GatewayCoordinationService(AbstractGatewayMessagingService):
                 event_type="agent.nudge.failed",
                 message=f"Nudge failed for {target.name}: {exc}",
                 agent_id=actor_agent.id,
+                board_id=board.id,
             )
             await self.session.commit()
             self.logger.error(
@@ -233,6 +234,7 @@ class GatewayCoordinationService(AbstractGatewayMessagingService):
             event_type="agent.nudge.sent",
             message=f"Nudge sent to {target.name}.",
             agent_id=actor_agent.id,
+            board_id=board.id,
         )
         await self.session.commit()
         self.logger.info(
@@ -397,6 +399,7 @@ class GatewayCoordinationService(AbstractGatewayMessagingService):
             event_type="agent.soul.updated",
             message=note,
             agent_id=actor_agent_id,
+            board_id=board.id,
         )
         await self.session.commit()
         self.logger.info(
@@ -437,7 +440,7 @@ class GatewayCoordinationService(AbstractGatewayMessagingService):
         tags = payload.reply_tags or ["gateway_main", "user_reply"]
         tags_json = json.dumps(tags)
         reply_source = payload.reply_source or "user_via_gateway_main"
-        base_url = settings.base_url or "http://localhost:8000"
+        base_url = settings.base_url
         message = (
             "LEAD REQUEST: ASK USER\n"
             f"Board: {board.name}\n"
@@ -470,6 +473,7 @@ class GatewayCoordinationService(AbstractGatewayMessagingService):
                 event_type="gateway.lead.ask_user.failed",
                 message=f"Lead user question failed for {board.name}: {exc}",
                 agent_id=actor_agent.id,
+                board_id=board.id,
             )
             await self.session.commit()
             self.logger.error(
@@ -501,6 +505,7 @@ class GatewayCoordinationService(AbstractGatewayMessagingService):
             event_type="gateway.lead.ask_user.sent",
             message=f"Lead requested user info via gateway agent for board: {board.name}.",
             agent_id=actor_agent.id,
+            board_id=board.id,
         )
         main_agent = await Agent.objects.filter_by(gateway_id=gateway.id, board_id=None).first(
             self.session,
@@ -595,6 +600,7 @@ class GatewayCoordinationService(AbstractGatewayMessagingService):
                 event_type="gateway.main.lead_message.failed",
                 message=f"Lead message failed for {board.name}: {exc}",
                 agent_id=actor_agent.id,
+                board_id=board.id,
             )
             await self.session.commit()
             self.logger.error(
@@ -626,6 +632,7 @@ class GatewayCoordinationService(AbstractGatewayMessagingService):
             event_type="gateway.main.lead_message.sent",
             message=f"Sent {payload.kind} to lead for board: {board.name}.",
             agent_id=actor_agent.id,
+            board_id=board.id,
         )
         await self.session.commit()
         self.logger.info(

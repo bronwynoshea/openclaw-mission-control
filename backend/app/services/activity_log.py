@@ -19,6 +19,7 @@ def record_activity(
     message: str,
     agent_id: UUID | None = None,
     task_id: UUID | None = None,
+    board_id: UUID | None = None,
 ) -> ActivityEvent:
     """Create and attach an activity event row to the current DB session."""
     event = ActivityEvent(
@@ -26,6 +27,7 @@ def record_activity(
         message=message,
         agent_id=agent_id,
         task_id=task_id,
+        board_id=board_id,
     )
     session.add(event)
     return event

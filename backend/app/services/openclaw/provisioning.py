@@ -370,7 +370,7 @@ def _build_context(
     workspace_root = gateway.workspace_root
     workspace_path = _workspace_path(agent, workspace_root)
     session_key = agent.openclaw_session_id or ""
-    base_url = settings.base_url or "REPLACE_WITH_BASE_URL"
+    base_url = settings.base_url
     main_session_key = GatewayAgentIdentity.session_key(gateway)
     identity_context = _identity_context(agent)
     user_context = _user_context(user)
@@ -411,7 +411,7 @@ def _build_main_context(
     auth_token: str,
     user: User | None,
 ) -> dict[str, str]:
-    base_url = settings.base_url or "REPLACE_WITH_BASE_URL"
+    base_url = settings.base_url
     identity_context = _identity_context(agent)
     user_context = _user_context(user)
     return {
