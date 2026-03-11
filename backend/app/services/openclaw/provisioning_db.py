@@ -28,6 +28,7 @@ from app.db import crud
 from app.db.pagination import paginate
 from app.db.session import async_session_maker
 from app.models.activity_events import ActivityEvent
+from app.models.agent_board_memberships import AgentBoardMembership
 from app.models.agents import Agent
 from app.models.approvals import Approval
 from app.models.board_memory import BoardMemory
@@ -185,6 +186,11 @@ class OpenClawProvisioningService(OpenClawDBService):
                 self.session.add(existing)
                 await self.session.commit()
                 await self.session.refresh(existing)
+            await self._ensure_agent_membership(
+                agent=existing,
+                board_id=board.id,
+                is_board_lead=True,
+            )
             return existing, False
 
         merged_identity_profile: dict[str, Any] = {
@@ -212,6 +218,11 @@ class OpenClawProvisioningService(OpenClawDBService):
         )
         raw_token = mint_agent_token(agent)
         await self.add_commit_refresh(agent)
+        await self._ensure_agent_membership(
+            agent=agent,
+            board_id=board.id,
+            is_board_lead=True,
+        )
 
         # Strict behavior: provisioning errors surface to the caller. The DB row exists
         # so a later retry can succeed with the same deterministic identity/session key.
@@ -961,6 +972,57 @@ class AgentLifecycleService(OpenClawDBService):
             board_id=agent.board_id,
         )
 
+    async def _ensure_agent_membership(
+        self,
+        *,
+        agent: Agent,
+        board_id: UUID | None,
+        is_board_lead: bool,
+    ) -> None:
+        if board_id is None:
+            return
+        existing = (
+            await self.session.exec(
+                select(AgentBoardMembership)
+                .where(col(AgentBoardMembership.agent_id) == agent.id)
+                .where(col(AgentBoardMembership.board_id) == board_id),
+            )
+        ).first()
+        if existing:
+            if is_board_lead and not existing.is_board_lead:
+                existing.is_board_lead = True
+                existing.updated_at = utcnow()
+                self.session.add(existing)
+                await self.session.commit()
+            return
+        membership = AgentBoardMembership(
+            agent_id=agent.id,
+            board_id=board_id,
+            is_board_lead=is_board_lead,
+        )
+        await self.add_commit_refresh(membership)
+
+    async def _clear_agent_memberships(self, *, agent: Agent) -> None:
+        existing = await self.session.exec(
+            select(AgentBoardMembership).where(col(AgentBoardMembership.agent_id) == agent.id),
+        )
+        memberships = list(existing)
+        if not memberships:
+            return
+        for membership in memberships:
+            await self.session.delete(membership)
+        await self.session.commit()
+
+    async def _sync_agent_membership(self, *, agent: Agent) -> None:
+        if agent.board_id is None:
+            await self._clear_agent_memberships(agent=agent)
+            return
+        await self._ensure_agent_membership(
+            agent=agent,
+            board_id=agent.board_id,
+            is_board_lead=agent.is_board_lead,
+        )
+
     async def coerce_agent_create_payload(
         self,
         payload: AgentCreate,
@@ -1069,6 +1131,7 @@ class AgentLifecycleService(OpenClawDBService):
         raw_token = mint_agent_token(agent)
         agent.openclaw_session_id = self.resolve_session_key(agent)
         await self.add_commit_refresh(agent)
+        await self._sync_agent_membership(agent=agent)
         return agent, raw_token
 
     async def _apply_gateway_provisioning(
@@ -1271,6 +1334,7 @@ class AgentLifecycleService(OpenClawDBService):
         self.session.add(agent)
         await self.session.commit()
         await self.session.refresh(agent)
+        await self._sync_agent_membership(agent=agent)
         return main_gateway, gateway_for_main
 
     async def resolve_agent_update_target(
