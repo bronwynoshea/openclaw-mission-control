@@ -1138,6 +1138,7 @@ export default function BoardDetailPage() {
   const [description, setDescription] = useState("");
   const [priority, setPriority] = useState("medium");
   const [createDueDate, setCreateDueDate] = useState("");
+  const [createAssigneeId, setCreateAssigneeId] = useState("");
   const [createTagIds, setCreateTagIds] = useState<string[]>([]);
   const [createCustomFieldValues, setCreateCustomFieldValues] =
     useState<TaskCustomFieldValues>({});
@@ -1972,6 +1973,7 @@ export default function BoardDetailPage() {
     setDescription("");
     setPriority("medium");
     setCreateDueDate("");
+    setCreateAssigneeId("");
     setCreateTagIds([]);
     setCreateCustomFieldValues(defaultCreateCustomFieldValues);
     setCreateError(null);
@@ -2007,6 +2009,7 @@ export default function BoardDetailPage() {
         status: "inbox",
         priority,
         due_at: localDateInputToUtcIso(createDueDate),
+        assigned_agent_id: createAssigneeId ? createAssigneeId : null,
         tag_ids: createTagIds,
         custom_field_values: createCustomFieldPayload,
       };
@@ -4547,6 +4550,33 @@ export default function BoardDetailPage() {
                 onChange={(event) => setCreateDueDate(event.target.value)}
                 disabled={!canWrite || isCreating}
               />
+            </div>
+            <div className="space-y-2">
+              <label className="text-sm font-medium text-strong">Assignee</label>
+              <Select
+                value={createAssigneeId || "unassigned"}
+                onValueChange={(value) =>
+                  setCreateAssigneeId(value === "unassigned" ? "" : value)
+                }
+                disabled={!canWrite || isCreating}
+              >
+                <SelectTrigger>
+                  <SelectValue placeholder="Unassigned" />
+                </SelectTrigger>
+                <SelectContent>
+                  <SelectItem value="unassigned">Unassigned</SelectItem>
+                  {assignableAgents.map((agent) => (
+                    <SelectItem key={agent.id} value={agent.id}>
+                      {agent.name}
+                    </SelectItem>
+                  ))}
+                </SelectContent>
+              </Select>
+              {assignableAgents.length === 0 ? (
+                <p className="text-xs text-slate-500">
+                  Add agents to assign tasks.
+                </p>
+              ) : null}
             </div>
             <div className="space-y-2">
               <div className="flex items-center justify-between gap-2">
