@@ -12,9 +12,13 @@ import {
   type listBoardsApiV1BoardsGetResponse,
   useListBoardsApiV1BoardsGet,
 } from "@/api/generated/boards/boards";
+import {
+  type listBoardGroupsApiV1BoardGroupsGetResponse,
+  useListBoardGroupsApiV1BoardGroupsGet,
+} from "@/api/generated/board-groups/board-groups";
 import { useCreateAgentApiV1AgentsPost } from "@/api/generated/agents/agents";
 import { useOrganizationMembership } from "@/lib/use-organization-membership";
-import type { BoardRead } from "@/api/generated/model";
+import type { BoardGroupRead, BoardRead } from "@/api/generated/model";
 import { DashboardPageLayout } from "@/components/templates/DashboardPageLayout";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
@@ -64,6 +68,9 @@ export default function NewAgentPage() {
   const [name, setName] = useState("");
   const [boardId, setBoardId] = useState<string>("");
   const [heartbeatEvery, setHeartbeatEvery] = useState("10m");
+  const [isSuperAdmin, setIsSuperAdmin] = useState(false);
+  const [isBoardGroupLead, setIsBoardGroupLead] = useState(false);
+  const [boardGroupId, setBoardGroupId] = useState<string>("");
   const [identityProfile, setIdentityProfile] = useState<IdentityProfile>({
     ...DEFAULT_IDENTITY_PROFILE,
   });
@@ -92,11 +99,27 @@ export default function NewAgentPage() {
     },
   });
 
+  const groupsQuery = useListBoardGroupsApiV1BoardGroupsGet<
+    listBoardGroupsApiV1BoardGroupsGetResponse,
+    ApiError
+  >(undefined, {
+    query: {
+      enabled: Boolean(isSignedIn && isAdmin),
+      refetchOnMount: "always",
+    },
+  });
+
   const boards =
     boardsQuery.data?.status === 200 ? (boardsQuery.data.data.items ?? []) : [];
+  const boardGroups: BoardGroupRead[] =
+    groupsQuery.data?.status === 200 ? (groupsQuery.data.data.items ?? []) : [];
   const displayBoardId = boardId || boards[0]?.id || "";
-  const isLoading = boardsQuery.isLoading || createAgentMutation.isPending;
-  const errorMessage = error ?? boardsQuery.error?.message ?? null;
+  const isLoading =
+    boardsQuery.isLoading ||
+    groupsQuery.isLoading ||
+    createAgentMutation.isPending;
+  const errorMessage =
+    error ?? boardsQuery.error?.message ?? groupsQuery.error?.message ?? null;
 
   const handleSubmit = (event: React.FormEvent<HTMLFormElement>) => {
     event.preventDefault();
@@ -111,20 +134,28 @@ export default function NewAgentPage() {
       setError("Select a board before creating an agent.");
       return;
     }
+    if (isBoardGroupLead && !boardGroupId) {
+      setError("Select a board group for board-group leads.");
+      return;
+    }
     setError(null);
-    createAgentMutation.mutate({
-      data: {
-        name: trimmed,
-        board_id: resolvedBoardId,
-        heartbeat_config: {
-          every: heartbeatEvery.trim() || "10m",
-          target: "last",
-          includeReasoning: false,
-        },
-        identity_profile: normalizeIdentityProfile(
-          identityProfile,
-        ) as unknown as Record<string, unknown> | null,
+    const payload = {
+      name: trimmed,
+      board_id: resolvedBoardId,
+      heartbeat_config: {
+        every: heartbeatEvery.trim() || "10m",
+        target: "last",
+        includeReasoning: false,
       },
+      identity_profile: normalizeIdentityProfile(
+        identityProfile,
+      ) as unknown as Record<string, unknown> | null,
+      is_super_admin: isSuperAdmin,
+      is_board_group_lead: isBoardGroupLead,
+      board_group_id: isBoardGroupLead ? boardGroupId : null,
+    } as unknown as Record<string, unknown>;
+    createAgentMutation.mutate({
+      data: payload,
     });
   };
 
@@ -227,6 +258,66 @@ export default function NewAgentPage() {
                     ))}
                   </SelectContent>
                 </Select>
+              </div>
+            </div>
+            <div className="grid gap-4 rounded-xl border border-slate-200 bg-slate-50 p-4 md:grid-cols-2">
+              <label className="flex items-start gap-3 text-sm text-slate-700">
+                <input
+                  type="checkbox"
+                  className="mt-1 h-4 w-4 rounded border-slate-300 text-blue-600 focus:ring-blue-200"
+                  checked={isSuperAdmin}
+                  onChange={(event) => setIsSuperAdmin(event.target.checked)}
+                  disabled={isLoading}
+                />
+                <span>
+                  <span className="block font-medium text-slate-900">
+                    Super admin
+                  </span>
+                  <span className="block text-xs text-slate-500">
+                    Can create agents and manage board-group leadership.
+                  </span>
+                </span>
+              </label>
+              <label className="flex items-start gap-3 text-sm text-slate-700">
+                <input
+                  type="checkbox"
+                  className="mt-1 h-4 w-4 rounded border-slate-300 text-blue-600 focus:ring-blue-200"
+                  checked={isBoardGroupLead}
+                  onChange={(event) => setIsBoardGroupLead(event.target.checked)}
+                  disabled={isLoading}
+                />
+                <span>
+                  <span className="block font-medium text-slate-900">
+                    Board-group lead
+                  </span>
+                  <span className="block text-xs text-slate-500">
+                    Can create boards and manage tasks within their group.
+                  </span>
+                </span>
+              </label>
+              <div className="space-y-2">
+                <label className="text-sm font-medium text-slate-900">
+                  Board group
+                </label>
+                <SearchableSelect
+                  ariaLabel="Select board group"
+                  value={boardGroupId}
+                  onValueChange={setBoardGroupId}
+                  options={boardGroups.map((group) => ({
+                    value: group.id,
+                    label: group.name,
+                  }))}
+                  placeholder="Select board group"
+                  searchPlaceholder="Search groups..."
+                  emptyMessage="No groups found."
+                  triggerClassName="w-full h-11 rounded-xl border border-slate-300 bg-white px-3 py-2 text-sm font-medium text-slate-900 shadow-sm focus:border-blue-500 focus:ring-2 focus:ring-blue-200"
+                  contentClassName="rounded-xl border border-slate-200 shadow-lg"
+                  itemClassName="px-4 py-3 text-sm text-slate-700 data-[selected=true]:bg-slate-50 data-[selected=true]:text-slate-900"
+                  disabled={!isBoardGroupLead || isLoading}
+                />
+                <p className="text-xs text-slate-500">
+                  Required when board-group lead is enabled.
+                </p>
               </div>
             </div>
           </div>

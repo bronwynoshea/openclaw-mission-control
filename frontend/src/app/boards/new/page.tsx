@@ -9,7 +9,11 @@ import { useRouter } from "next/navigation";
 import { useAuth } from "@/auth/clerk";
 
 import { ApiError } from "@/api/mutator";
-import { useCreateBoardApiV1BoardsPost } from "@/api/generated/boards/boards";
+import {
+  type listBoardsApiV1BoardsGetResponse,
+  useCreateBoardApiV1BoardsPost,
+  useListBoardsApiV1BoardsGet,
+} from "@/api/generated/boards/boards";
 import {
   type listBoardGroupsApiV1BoardGroupsGetResponse,
   useListBoardGroupsApiV1BoardGroupsGet,
@@ -19,7 +23,7 @@ import {
   useListGatewaysApiV1GatewaysGet,
 } from "@/api/generated/gateways/gateways";
 import { useOrganizationMembership } from "@/lib/use-organization-membership";
-import type { BoardGroupRead } from "@/api/generated/model";
+import type { BoardGroupRead, BoardRead } from "@/api/generated/model";
 import { DashboardPageLayout } from "@/components/templates/DashboardPageLayout";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
@@ -43,6 +47,7 @@ export default function NewBoardPage() {
   const [description, setDescription] = useState("");
   const [gatewayId, setGatewayId] = useState<string>("");
   const [boardGroupId, setBoardGroupId] = useState<string>("none");
+  const [parentBoardId, setParentBoardId] = useState<string>("none");
 
   const [error, setError] = useState<string | null>(null);
 
@@ -59,6 +64,17 @@ export default function NewBoardPage() {
 
   const groupsQuery = useListBoardGroupsApiV1BoardGroupsGet<
     listBoardGroupsApiV1BoardGroupsGetResponse,
+    ApiError
+  >(undefined, {
+    query: {
+      enabled: Boolean(isSignedIn && isAdmin),
+      refetchOnMount: "always",
+      retry: false,
+    },
+  });
+
+  const boardsQuery = useListBoardsApiV1BoardsGet<
+    listBoardsApiV1BoardsGetResponse,
     ApiError
   >(undefined, {
     query: {
@@ -89,13 +105,22 @@ export default function NewBoardPage() {
     if (groupsQuery.data?.status !== 200) return [];
     return groupsQuery.data.data.items ?? [];
   }, [groupsQuery.data]);
+  const boards = useMemo<BoardRead[]>(() => {
+    if (boardsQuery.data?.status !== 200) return [];
+    return boardsQuery.data.data.items ?? [];
+  }, [boardsQuery.data]);
   const displayGatewayId = gatewayId || gateways[0]?.id || "";
   const isLoading =
     gatewaysQuery.isLoading ||
     groupsQuery.isLoading ||
+    boardsQuery.isLoading ||
     createBoardMutation.isPending;
   const errorMessage =
-    error ?? gatewaysQuery.error?.message ?? groupsQuery.error?.message ?? null;
+    error ??
+    gatewaysQuery.error?.message ??
+    groupsQuery.error?.message ??
+    boardsQuery.error?.message ??
+    null;
 
   const isFormReady = Boolean(
     name.trim() && description.trim() && displayGatewayId,
@@ -114,6 +139,13 @@ export default function NewBoardPage() {
     ],
     [groups],
   );
+
+  const parentBoardOptions = useMemo(() => {
+    if (boardGroupId === "none") return [];
+    return boards
+      .filter((board) => board.board_group_id === boardGroupId)
+      .map((board) => ({ value: board.id, label: board.name }));
+  }, [boards, boardGroupId]);
 
   const handleSubmit = (event: React.FormEvent<HTMLFormElement>) => {
     event.preventDefault();
@@ -143,7 +175,8 @@ export default function NewBoardPage() {
         description: trimmedDescription,
         gateway_id: resolvedGatewayId,
         board_group_id: boardGroupId === "none" ? null : boardGroupId,
-      },
+        parent_board_id: parentBoardId === "none" ? null : parentBoardId,
+      } as unknown as Record<string, unknown>,
     });
   };
 
@@ -203,7 +236,10 @@ export default function NewBoardPage() {
               <SearchableSelect
                 ariaLabel="Select board group"
                 value={boardGroupId}
-                onValueChange={setBoardGroupId}
+                onValueChange={(value) => {
+                  setBoardGroupId(value);
+                  setParentBoardId("none");
+                }}
                 options={groupOptions}
                 placeholder="No group"
                 searchPlaceholder="Search groups..."
@@ -215,6 +251,35 @@ export default function NewBoardPage() {
               />
               <p className="text-xs text-slate-500">
                 Optional. Groups increase cross-board visibility.
+              </p>
+            </div>
+            <div className="space-y-2">
+              <label className="text-sm font-medium text-slate-900">
+                Parent board
+              </label>
+              <SearchableSelect
+                ariaLabel="Select parent board"
+                value={parentBoardId}
+                onValueChange={setParentBoardId}
+                options={
+                  parentBoardOptions.length
+                    ? [{ value: "none", label: "No parent" }, ...parentBoardOptions]
+                    : [{ value: "none", label: "No parent" }]
+                }
+                placeholder="No parent"
+                searchPlaceholder="Search boards..."
+                emptyMessage={
+                  boardGroupId === "none"
+                    ? "Select a board group first."
+                    : "No matching boards."
+                }
+                triggerClassName="w-full h-11 rounded-xl border border-slate-300 bg-white px-3 py-2 text-sm font-medium text-slate-900 shadow-sm focus:border-blue-500 focus:ring-2 focus:ring-blue-200"
+                contentClassName="rounded-xl border border-slate-200 shadow-lg"
+                itemClassName="px-4 py-3 text-sm text-slate-700 data-[selected=true]:bg-slate-50 data-[selected=true]:text-slate-900"
+                disabled={isLoading || boardGroupId === "none"}
+              />
+              <p className="text-xs text-slate-500">
+                Optional. Parent boards must be in the same group.
               </p>
             </div>
           </div>

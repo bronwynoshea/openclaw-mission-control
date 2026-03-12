@@ -98,6 +98,11 @@ export default function AgentDetailPage() {
 
   const agent: AgentRead | null =
     agentQuery.data?.status === 200 ? agentQuery.data.data : null;
+  const agentFlags = agent as (AgentRead & {
+    is_super_admin?: boolean;
+    is_board_group_lead?: boolean;
+    board_group_id?: string | null;
+  });
   const events = useMemo<ActivityEventRead[]>(() => {
     if (activityQuery.data?.status !== 200) return [];
     return activityQuery.data.data.items ?? [];
@@ -262,6 +267,27 @@ export default function AgentDetailPage() {
                         ) : (
                           <p className="mt-1 text-sm text-strong">—</p>
                         )}
+                      </div>
+                      <div>
+                        <p className="text-xs font-semibold uppercase tracking-[0.2em] text-quiet">
+                          Access
+                        </p>
+                        <div className="mt-1 flex flex-wrap gap-2">
+                          {agentFlags?.is_super_admin ? (
+                            <span className="rounded-full bg-[color:var(--accent-soft)] px-2.5 py-1 text-xs font-semibold text-[color:var(--accent)]">
+                              Super admin
+                            </span>
+                          ) : null}
+                          {agentFlags?.is_board_group_lead ? (
+                            <span className="rounded-full bg-[color:var(--surface-muted)] px-2.5 py-1 text-xs font-semibold text-strong">
+                              Board-group lead
+                            </span>
+                          ) : null}
+                          {!agentFlags?.is_super_admin &&
+                          !agentFlags?.is_board_group_lead ? (
+                            <span className="text-sm text-muted">Standard</span>
+                          ) : null}
+                        </div>
                       </div>
                       <div>
                         <p className="text-xs font-semibold uppercase tracking-[0.2em] text-quiet">

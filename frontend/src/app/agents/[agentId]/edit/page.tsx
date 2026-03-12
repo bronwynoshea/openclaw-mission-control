@@ -17,7 +17,16 @@ import {
   type listBoardsApiV1BoardsGetResponse,
   useListBoardsApiV1BoardsGet,
 } from "@/api/generated/boards/boards";
-import type { AgentRead, AgentUpdate, BoardRead } from "@/api/generated/model";
+import {
+  type listBoardGroupsApiV1BoardGroupsGetResponse,
+  useListBoardGroupsApiV1BoardGroupsGet,
+} from "@/api/generated/board-groups/board-groups";
+import type {
+  AgentRead,
+  AgentUpdate,
+  BoardRead,
+  BoardGroupRead,
+} from "@/api/generated/model";
 import { DashboardPageLayout } from "@/components/templates/DashboardPageLayout";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
@@ -91,6 +100,15 @@ export default function EditAgentPage() {
   const [isGatewayMain, setIsGatewayMain] = useState<boolean | undefined>(
     undefined,
   );
+  const [isSuperAdmin, setIsSuperAdmin] = useState<boolean | undefined>(
+    undefined,
+  );
+  const [isBoardGroupLead, setIsBoardGroupLead] = useState<
+    boolean | undefined
+  >(undefined);
+  const [boardGroupId, setBoardGroupId] = useState<string | undefined>(
+    undefined,
+  );
   const [heartbeatEvery, setHeartbeatEvery] = useState<string | undefined>(
     undefined,
   );
@@ -101,6 +119,17 @@ export default function EditAgentPage() {
 
   const boardsQuery = useListBoardsApiV1BoardsGet<
     listBoardsApiV1BoardsGetResponse,
+    ApiError
+  >(undefined, {
+    query: {
+      enabled: Boolean(isSignedIn),
+      refetchOnMount: "always",
+      retry: false,
+    },
+  });
+
+  const groupsQuery = useListBoardGroupsApiV1BoardGroupsGet<
+    listBoardGroupsApiV1BoardGroupsGetResponse,
     ApiError
   >(undefined, {
     query: {
@@ -138,8 +167,17 @@ export default function EditAgentPage() {
     if (boardsQuery.data?.status !== 200) return [];
     return boardsQuery.data.data.items ?? [];
   }, [boardsQuery.data]);
+  const boardGroups = useMemo<BoardGroupRead[]>(() => {
+    if (groupsQuery.data?.status !== 200) return [];
+    return groupsQuery.data.data.items ?? [];
+  }, [groupsQuery.data]);
   const loadedAgent: AgentRead | null =
     agentQuery.data?.status === 200 ? agentQuery.data.data : null;
+  const loadedAgentFlags = loadedAgent as (AgentRead & {
+    is_super_admin?: boolean;
+    is_board_group_lead?: boolean;
+    board_group_id?: string | null;
+  });
 
   const loadedHeartbeat = useMemo(() => {
     const heartbeat = loadedAgent?.heartbeat_config;
@@ -170,13 +208,26 @@ export default function EditAgentPage() {
   }, [loadedAgent?.identity_profile]);
 
   const isLoading =
-    boardsQuery.isLoading || agentQuery.isLoading || updateMutation.isPending;
+    boardsQuery.isLoading ||
+    groupsQuery.isLoading ||
+    agentQuery.isLoading ||
+    updateMutation.isPending;
   const errorMessage =
-    error ?? agentQuery.error?.message ?? boardsQuery.error?.message ?? null;
+    error ??
+    agentQuery.error?.message ??
+    boardsQuery.error?.message ??
+    groupsQuery.error?.message ??
+    null;
 
   const resolvedName = name ?? loadedAgent?.name ?? "";
   const resolvedIsGatewayMain =
     isGatewayMain ?? Boolean(loadedAgent?.is_gateway_main);
+  const resolvedIsSuperAdmin =
+    isSuperAdmin ?? Boolean(loadedAgentFlags?.is_super_admin);
+  const resolvedIsBoardGroupLead =
+    isBoardGroupLead ?? Boolean(loadedAgentFlags?.is_board_group_lead);
+  const resolvedBoardGroupId =
+    boardGroupId ?? loadedAgentFlags?.board_group_id ?? "";
   const resolvedHeartbeatEvery = heartbeatEvery ?? loadedHeartbeat.every;
   const resolvedIdentityProfile = identityProfile ?? loadedIdentityProfile;
 
@@ -184,6 +235,15 @@ export default function EditAgentPage() {
     if (resolvedIsGatewayMain) return boardId ?? "";
     return boardId ?? loadedAgent?.board_id ?? boards[0]?.id ?? "";
   }, [boardId, boards, loadedAgent?.board_id, resolvedIsGatewayMain]);
+
+  const groupOptions = useMemo(
+    () =>
+      boardGroups.map((group) => ({
+        value: group.id,
+        label: group.name,
+      })),
+    [boardGroups],
+  );
 
   const handleSubmit = (event: React.FormEvent<HTMLFormElement>) => {
     event.preventDefault();
@@ -195,6 +255,10 @@ export default function EditAgentPage() {
     }
     if (!resolvedIsGatewayMain && !resolvedBoardId) {
       setError("Select a board or mark this agent as the gateway main.");
+      return;
+    }
+    if (resolvedIsBoardGroupLead && !resolvedBoardGroupId) {
+      setError("Select a board group for board-group leads.");
       return;
     }
     if (
@@ -232,6 +296,23 @@ export default function EditAgentPage() {
         resolvedIdentityProfile,
       ) as unknown as Record<string, unknown> | null,
     };
+    (payload as AgentUpdate & {
+      is_super_admin?: boolean;
+      is_board_group_lead?: boolean;
+      board_group_id?: string | null;
+    }).is_super_admin = resolvedIsSuperAdmin;
+    (payload as AgentUpdate & {
+      is_super_admin?: boolean;
+      is_board_group_lead?: boolean;
+      board_group_id?: string | null;
+    }).is_board_group_lead = resolvedIsBoardGroupLead;
+    (payload as AgentUpdate & {
+      is_super_admin?: boolean;
+      is_board_group_lead?: boolean;
+      board_group_id?: string | null;
+    }).board_group_id = resolvedIsBoardGroupLead
+      ? resolvedBoardGroupId || null
+      : null;
     if (!resolvedIsGatewayMain) {
       payload.board_id = resolvedBoardId || null;
     } else if (resolvedBoardId) {
@@ -377,7 +458,7 @@ export default function EditAgentPage() {
               </div>
             </div>
           </div>
-          <div className="mt-6 rounded-xl border border-slate-200 bg-slate-50 p-4">
+          <div className="mt-6 grid gap-4 rounded-xl border border-slate-200 bg-slate-50 p-4 md:grid-cols-2">
             <label className="flex items-start gap-3 text-sm text-slate-700">
               <input
                 type="checkbox"
@@ -396,6 +477,61 @@ export default function EditAgentPage() {
                 </span>
               </span>
             </label>
+            <label className="flex items-start gap-3 text-sm text-slate-700">
+              <input
+                type="checkbox"
+                className="mt-1 h-4 w-4 rounded border-slate-300 text-blue-600 focus:ring-blue-200"
+                checked={resolvedIsSuperAdmin}
+                onChange={(event) => setIsSuperAdmin(event.target.checked)}
+                disabled={isLoading}
+              />
+              <span>
+                <span className="block font-medium text-slate-900">
+                  Super admin
+                </span>
+                <span className="block text-xs text-slate-500">
+                  Can create agents and manage board-group leadership.
+                </span>
+              </span>
+            </label>
+            <label className="flex items-start gap-3 text-sm text-slate-700">
+              <input
+                type="checkbox"
+                className="mt-1 h-4 w-4 rounded border-slate-300 text-blue-600 focus:ring-blue-200"
+                checked={resolvedIsBoardGroupLead}
+                onChange={(event) => setIsBoardGroupLead(event.target.checked)}
+                disabled={isLoading}
+              />
+              <span>
+                <span className="block font-medium text-slate-900">
+                  Board-group lead
+                </span>
+                <span className="block text-xs text-slate-500">
+                  Can create boards and manage tasks within their group.
+                </span>
+              </span>
+            </label>
+            <div className="space-y-2">
+              <label className="text-sm font-medium text-slate-900">
+                Board group
+              </label>
+              <SearchableSelect
+                ariaLabel="Select board group"
+                value={resolvedBoardGroupId}
+                onValueChange={(value) => setBoardGroupId(value)}
+                options={groupOptions}
+                placeholder="Select board group"
+                searchPlaceholder="Search groups..."
+                emptyMessage="No groups found."
+                triggerClassName="w-full h-11 rounded-xl border border-slate-300 bg-white px-3 py-2 text-sm font-medium text-slate-900 shadow-sm focus:border-blue-500 focus:ring-2 focus:ring-blue-200"
+                contentClassName="rounded-xl border border-slate-200 shadow-lg"
+                itemClassName="px-4 py-3 text-sm text-slate-700 data-[selected=true]:bg-slate-50 data-[selected=true]:text-slate-900"
+                disabled={!resolvedIsBoardGroupLead || isLoading}
+              />
+              <p className="text-xs text-slate-500">
+                Required when board-group lead is enabled.
+              </p>
+            </div>
           </div>
         </div>
 
