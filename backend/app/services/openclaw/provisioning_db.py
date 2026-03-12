@@ -32,6 +32,7 @@ from app.models.agents import Agent
 from app.models.approvals import Approval
 from app.models.board_memory import BoardMemory
 from app.models.board_webhooks import BoardWebhook
+from app.models.board_groups import BoardGroup
 from app.models.boards import Board
 from app.models.gateways import Gateway
 from app.models.organizations import Organization
@@ -972,11 +973,12 @@ class AgentLifecycleService(OpenClawDBService):
             return payload
 
         if actor.actor_type == "agent":
-            board_id = OpenClawAuthorizationPolicy.resolve_board_lead_create_board_id(
-                actor_agent=actor.agent,
-                requested_board_id=payload.board_id,
-            )
-            return AgentCreate(**{**payload.model_dump(), "board_id": board_id})
+            if actor.agent is None or not actor.agent.is_super_admin:
+                raise HTTPException(
+                    status_code=status.HTTP_403_FORBIDDEN,
+                    detail="Only super admin agents can create agents",
+                )
+            return payload
 
         return payload
 
@@ -1191,6 +1193,8 @@ class AgentLifecycleService(OpenClawDBService):
                 status_code=status.HTTP_403_FORBIDDEN,
                 detail="status is controlled by agent heartbeat",
             )
+        if "is_super_admin" in updates or "is_board_group_lead" in updates:
+            OpenClawAuthorizationPolicy.require_org_admin(is_admin=is_org_admin(ctx.member))
         if "board_id" in updates and updates["board_id"] is not None:
             new_board = await self.require_board(updates["board_id"])
             OpenClawAuthorizationPolicy.require_board_in_org(
@@ -1204,6 +1208,12 @@ class AgentLifecycleService(OpenClawDBService):
                 write=True,
             )
             OpenClawAuthorizationPolicy.require_board_write_access(allowed=allowed)
+        if "board_group_id" in updates and updates["board_group_id"] is not None:
+            board_group = await BoardGroup.objects.by_id(updates["board_group_id"]).first(
+                self.session,
+            )
+            if board_group is None or board_group.organization_id != ctx.organization.id:
+                raise HTTPException(status_code=status.HTTP_404_NOT_FOUND)
 
     async def apply_agent_update_mutations(
         self,

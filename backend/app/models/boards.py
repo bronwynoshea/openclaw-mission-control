@@ -30,6 +30,11 @@ class Board(TenantScoped, table=True):
         foreign_key="board_groups.id",
         index=True,
     )
+    parent_board_id: UUID | None = Field(
+        default=None,
+        foreign_key="boards.id",
+        index=True,
+    )
     board_type: str = Field(default="goal", index=True)
     objective: str | None = None
     success_metrics: dict[str, object] | None = Field(

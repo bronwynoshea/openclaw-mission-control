@@ -49,5 +49,8 @@ class Agent(QueryModel, table=True):
     checkin_deadline_at: datetime | None = Field(default=None)
     last_provision_error: str | None = Field(default=None, sa_column=Column(Text))
     is_board_lead: bool = Field(default=False, index=True)
+    is_board_group_lead: bool = Field(default=False, index=True)
+    board_group_id: UUID | None = Field(default=None, foreign_key="board_groups.id", index=True)
+    is_super_admin: bool = Field(default=False, index=True)
     created_at: datetime = Field(default_factory=utcnow)
     updated_at: datetime = Field(default_factory=utcnow)

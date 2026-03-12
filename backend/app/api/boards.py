@@ -168,6 +168,27 @@ async def _require_board_group(
     return group
 
 
+async def _require_parent_board(
+    session: AsyncSession,
+    parent_board_id: object,
+    *,
+    organization_id: UUID,
+    board_group_id: UUID | None,
+) -> Board:
+    parent = await crud.get_by_id(session, Board, parent_board_id)
+    if parent is None or parent.organization_id != organization_id:
+        raise HTTPException(
+            status_code=status.HTTP_422_UNPROCESSABLE_CONTENT,
+            detail="parent_board_id is invalid",
+        )
+    if board_group_id is not None and parent.board_group_id != board_group_id:
+        raise HTTPException(
+            status_code=status.HTTP_422_UNPROCESSABLE_CONTENT,
+            detail="parent_board_id must belong to the same board group",
+        )
+    return parent
+
+
 async def _require_board_group_for_create(
     payload: BoardCreate,
     ctx: OrganizationContext = ORG_ADMIN_DEP,
@@ -204,6 +225,14 @@ async def _apply_board_update(
             session,
             updates["board_group_id"],
             organization_id=board.organization_id,
+        )
+    if "parent_board_id" in updates and updates["parent_board_id"] is not None:
+        effective_group_id = updates.get("board_group_id", board.board_group_id)
+        await _require_parent_board(
+            session,
+            updates["parent_board_id"],
+            organization_id=board.organization_id,
+            board_group_id=effective_group_id,
         )
     crud.apply_updates(board, updates)
     if updates.get("board_type") == "goal" and (not board.objective or not board.success_metrics):
@@ -485,6 +514,13 @@ async def create_board(
     ctx: OrganizationContext = ORG_ADMIN_DEP,
 ) -> Board:
     """Create a board in the active organization."""
+    if payload.parent_board_id is not None:
+        await _require_parent_board(
+            session,
+            payload.parent_board_id,
+            organization_id=ctx.organization.id,
+            board_group_id=payload.board_group_id,
+        )
     data = payload.model_dump()
     data["organization_id"] = ctx.organization.id
     return await crud.create(session, Board, **data)

@@ -72,6 +72,19 @@ class AgentBase(SQLModel):
         description="Board id that scopes this agent. Omit only when policy allows global agents.",
         examples=["11111111-1111-1111-1111-111111111111"],
     )
+    board_group_id: UUID | None = Field(
+        default=None,
+        description="Optional board group scope for group lead agents.",
+        examples=["22222222-2222-2222-2222-222222222222"],
+    )
+    is_board_group_lead: bool = Field(
+        default=False,
+        description="Whether this agent leads a board group.",
+    )
+    is_super_admin: bool = Field(
+        default=False,
+        description="Whether this agent can perform super-admin actions.",
+    )
     name: NonEmptyStr = Field(
         description="Human-readable agent display name.",
         examples=["Ops triage lead"],
@@ -155,6 +168,19 @@ class AgentUpdate(SQLModel):
         default=None,
         description="Optional new board assignment.",
         examples=["22222222-2222-2222-2222-222222222222"],
+    )
+    board_group_id: UUID | None = Field(
+        default=None,
+        description="Optional new board group assignment.",
+        examples=["33333333-3333-3333-3333-333333333333"],
+    )
+    is_board_group_lead: bool | None = Field(
+        default=None,
+        description="Whether this agent leads a board group.",
+    )
+    is_super_admin: bool | None = Field(
+        default=None,
+        description="Whether this agent can perform super-admin actions.",
     )
     is_gateway_main: bool | None = Field(
         default=None,

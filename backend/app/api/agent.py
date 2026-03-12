@@ -18,9 +18,12 @@ from app.api import board_onboarding as onboarding_api
 from app.api import tasks as tasks_api
 from app.api.deps import ActorContext, get_board_or_404, get_task_or_404
 from app.core.agent_auth import AgentAuthContext, get_agent_auth_context
+from app.core.time import utcnow
+from app.db import crud
 from app.db.pagination import paginate
 from app.db.session import get_session
 from app.models.agents import Agent
+from app.models.board_groups import BoardGroup
 from app.models.board_webhook_payloads import BoardWebhookPayload
 from app.models.boards import Board
 from app.models.tags import Tag
@@ -36,7 +39,7 @@ from app.schemas.approvals import ApprovalCreate, ApprovalRead, ApprovalStatus
 from app.schemas.board_memory import BoardMemoryCreate, BoardMemoryRead
 from app.schemas.board_onboarding import BoardOnboardingAgentUpdate, BoardOnboardingRead
 from app.schemas.board_webhooks import BoardWebhookPayloadRead
-from app.schemas.boards import BoardRead
+from app.schemas.boards import BoardCreate, BoardRead, BoardUpdate
 from app.schemas.common import OkResponse
 from app.schemas.errors import LLMErrorResponse
 from app.schemas.gateway_coordination import (
@@ -218,6 +221,16 @@ def _payload_preview_with_limit(
 
 
 def _guard_board_access(agent_ctx: AgentAuthContext, board: Board) -> None:
+    if agent_ctx.agent.is_super_admin:
+        return
+    if agent_ctx.agent.is_board_group_lead and agent_ctx.agent.board_group_id:
+        if board.board_group_id == agent_ctx.agent.board_group_id:
+            return
+    if agent_ctx.agent.is_board_lead and agent_ctx.agent.board_id:
+        if board.id == agent_ctx.agent.board_id:
+            return
+        if board.parent_board_id == agent_ctx.agent.board_id:
+            return
     allowed = not (agent_ctx.agent.board_id and agent_ctx.agent.board_id != board.id)
     OpenClawAuthorizationPolicy.require_board_write_access(allowed=allowed)
 
@@ -229,7 +242,20 @@ def _require_board_lead(agent_ctx: AgentAuthContext) -> Agent:
     )
 
 
+def _require_super_admin(agent_ctx: AgentAuthContext) -> Agent:
+    if agent_ctx.agent.is_super_admin:
+        return agent_ctx.agent
+    raise HTTPException(
+        status_code=status.HTTP_403_FORBIDDEN,
+        detail="Only super admin agents can perform this action",
+    )
+
+
 def _guard_task_access(agent_ctx: AgentAuthContext, task: Task) -> None:
+    if agent_ctx.agent.is_super_admin:
+        return
+    if agent_ctx.agent.is_board_group_lead and agent_ctx.agent.board_group_id:
+        return
     allowed = not (
         agent_ctx.agent.board_id and task.board_id and agent_ctx.agent.board_id != task.board_id
     )
@@ -366,8 +392,16 @@ async def list_boards(
     Main agents may see multiple boards when permitted by auth scope.
     """
     statement = select(Board)
-    if agent_ctx.agent.board_id:
-        statement = statement.where(col(Board.id) == agent_ctx.agent.board_id)
+    if agent_ctx.agent.is_super_admin:
+        statement = statement.order_by(col(Board.created_at).desc())
+        return await paginate(session, statement)
+    if agent_ctx.agent.is_board_group_lead and agent_ctx.agent.board_group_id:
+        statement = statement.where(col(Board.board_group_id) == agent_ctx.agent.board_group_id)
+    elif agent_ctx.agent.board_id:
+        statement = statement.where(
+            (col(Board.id) == agent_ctx.agent.board_id)
+            | (col(Board.parent_board_id) == agent_ctx.agent.board_id)
+        )
     statement = statement.order_by(col(Board.created_at).desc())
     return await paginate(session, statement)
 
@@ -438,6 +472,94 @@ def get_board(
     return board
 
 
+@router.post(
+    "/board-groups/{group_id}/boards",
+    response_model=BoardRead,
+    tags=AGENT_LEAD_TAGS,
+    summary="Create a board in a board group",
+    description="Create a new board inside a board group as a board-group lead.",
+    operation_id="agent_group_lead_create_board",
+    responses={
+        403: {"model": LLMErrorResponse, "description": "Caller is not group lead"},
+        404: {"model": LLMErrorResponse, "description": "Board group not found"},
+    },
+)
+async def create_board_in_group(
+    group_id: UUID,
+    payload: BoardCreate,
+    session: AsyncSession = SESSION_DEP,
+    agent_ctx: AgentAuthContext = AGENT_CTX_DEP,
+) -> BoardRead:
+    """Create a board within a board group as group lead or super admin."""
+    group = await BoardGroup.objects.by_id(group_id).first(session)
+    if group is None:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND)
+    if not agent_ctx.agent.is_super_admin:
+        if not agent_ctx.agent.is_board_group_lead or agent_ctx.agent.board_group_id != group_id:
+            raise HTTPException(status_code=status.HTTP_403_FORBIDDEN)
+    if payload.board_group_id and payload.board_group_id != group_id:
+        raise HTTPException(
+            status_code=status.HTTP_422_UNPROCESSABLE_CONTENT,
+            detail="board_group_id must match path group_id",
+        )
+    if payload.parent_board_id is not None:
+        parent = await Board.objects.by_id(payload.parent_board_id).first(session)
+        if parent is None or parent.board_group_id != group_id:
+            raise HTTPException(
+                status_code=status.HTTP_422_UNPROCESSABLE_CONTENT,
+                detail="parent_board_id must belong to the same board group",
+            )
+    data = payload.model_dump()
+    data["organization_id"] = group.organization_id
+    data["board_group_id"] = group_id
+    board = await crud.create(session, Board, **data)
+    return BoardRead.model_validate(board, from_attributes=True)
+
+
+@router.patch(
+    "/boards/{board_id}",
+    response_model=BoardRead,
+    tags=AGENT_LEAD_TAGS,
+    summary="Update a board as group lead",
+    description="Update board metadata within a board group.",
+    operation_id="agent_group_lead_update_board",
+    responses={
+        403: {"model": LLMErrorResponse, "description": "Caller is not group lead"},
+        404: {"model": LLMErrorResponse, "description": "Board not found"},
+    },
+)
+async def update_board_as_group_lead(
+    board_id: UUID,
+    payload: BoardUpdate,
+    session: AsyncSession = SESSION_DEP,
+    agent_ctx: AgentAuthContext = AGENT_CTX_DEP,
+) -> BoardRead:
+    """Update a board within the caller's board group."""
+    board = await Board.objects.by_id(board_id).first(session)
+    if board is None:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND)
+    if not agent_ctx.agent.is_super_admin:
+        if not agent_ctx.agent.is_board_group_lead or agent_ctx.agent.board_group_id != board.board_group_id:
+            raise HTTPException(status_code=status.HTTP_403_FORBIDDEN)
+    updates = payload.model_dump(exclude_unset=True)
+    if "board_group_id" in updates and updates["board_group_id"] != board.board_group_id:
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="Board-group leads cannot move boards outside their group",
+        )
+    if "parent_board_id" in updates and updates["parent_board_id"] is not None:
+        parent = await Board.objects.by_id(updates["parent_board_id"]).first(session)
+        if parent is None or parent.board_group_id != board.board_group_id:
+            raise HTTPException(
+                status_code=status.HTTP_422_UNPROCESSABLE_CONTENT,
+                detail="parent_board_id must belong to the same board group",
+            )
+    crud.apply_updates(board, updates)
+    board.updated_at = utcnow()
+    board = await crud.save(session, board)
+    return BoardRead.model_validate(board, from_attributes=True)
+
+
 @router.get(
     "/agents",
     response_model=DefaultLimitOffsetPage[AgentRead],
@@ -501,15 +623,29 @@ async def list_agents(
     Useful for lead delegation and workload balancing.
     """
     statement = select(Agent)
-    if agent_ctx.agent.board_id:
+    if agent_ctx.agent.is_super_admin:
         if board_id:
-            OpenClawAuthorizationPolicy.require_board_write_access(
-                allowed=board_id == agent_ctx.agent.board_id,
-            )
-        statement = statement.where(Agent.board_id == agent_ctx.agent.board_id)
-    elif board_id:
-        statement = statement.where(Agent.board_id == board_id)
-    statement = statement.order_by(col(Agent.created_at).desc())
+            statement = statement.where(Agent.board_id == board_id)
+        statement = statement.order_by(col(Agent.created_at).desc())
+    elif agent_ctx.agent.is_board_group_lead and agent_ctx.agent.board_group_id:
+        board_ids = await session.exec(
+            select(Board.id).where(col(Board.board_group_id) == agent_ctx.agent.board_group_id)
+        )
+        allowed_board_ids = list(board_ids)
+        if board_id and board_id not in set(allowed_board_ids):
+            OpenClawAuthorizationPolicy.require_board_write_access(allowed=False)
+        statement = statement.where(col(Agent.board_id).in_(allowed_board_ids))
+        statement = statement.order_by(col(Agent.created_at).desc())
+    else:
+        if agent_ctx.agent.board_id:
+            if board_id:
+                OpenClawAuthorizationPolicy.require_board_write_access(
+                    allowed=board_id == agent_ctx.agent.board_id,
+                )
+            statement = statement.where(Agent.board_id == agent_ctx.agent.board_id)
+        elif board_id:
+            statement = statement.where(Agent.board_id == board_id)
+        statement = statement.order_by(col(Agent.created_at).desc())
 
     def _transform(items: Sequence[Any]) -> Sequence[Any]:
         agents = _coerce_agent_items(items)
@@ -1320,14 +1456,11 @@ async def create_agent(
     session: AsyncSession = SESSION_DEP,
     agent_ctx: AgentAuthContext = AGENT_CTX_DEP,
 ) -> AgentRead:
-    """Create a new board agent as lead.
+    """Create a new board agent as super admin.
 
-    The new agent is always forced onto the caller's board (`board_id` override).
+    Only super admin agents may create new agents.
     """
-    lead = _require_board_lead(agent_ctx)
-    payload = AgentCreate(
-        **{**payload.model_dump(), "board_id": lead.board_id},
-    )
+    _require_super_admin(agent_ctx)
     return await agents_api.create_agent(
         payload=payload,
         session=session,
